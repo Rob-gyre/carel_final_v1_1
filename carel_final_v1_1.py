@@ -35,6 +35,11 @@ PARAMS = {
     "Pb3": ("S31", 10, True, "Probe 3 / auxiliary temp °C"),
     "St": ("S81", 10, True, "Setpoint °C"),
     "rd": ("S91", 10, True, "Differential °C"),
+    "LSE": ("S:1", 10, True, "Minimum setpoint allowed °C"),
+    "HSE": ("S;1", 10, True, "Maximum setpoint allowed °C"),
+    "/C1": ("S51", 10, True, "Probe 1 calibration °C"),
+    "/C2": ("S61", 10, True, "Probe 2 calibration °C"),
+    "F1": ("SC1", 10, True, "Fan stop temp °C"),
     "AL": ("S?1", 10, True, "Low alarm °C"),
     "AH": ("S@1", 10, True, "High alarm °C"),
     "dt": ("S=1", 10, True, "Defrost end temp °C"),
@@ -49,12 +54,16 @@ PARAMS = {
     "d5": ("UE1", 1, False, "Defrost delay (min)"),
     "dd": ("UF1", 1, False, "Drain time (min)"),
     "d8": ("UG1", 1, False, "Defrost priority"),
+    "Fd": ("UL1", 1, False, "Fan delay after dripping (min)"),
     
     # B-table (bit) - 0 or 1
     "d4": ("BL1", 1, False, "Defrost at power-on"),
     "d6": ("BM1", 1, False, "Display during defrost"),
     "d9": ("BN1", 1, False, "Defrost priority over compressor protection"),
     "dC": ("BO1", 1, False, "Defrost time base"),
+    "F0": ("BQ1", 1, False, "Enable evaporator fan control"),
+    "F2": ("BR1", 1, False, "Fans cycle with compressor"),
+    "F3": ("BS1", 1, False, "Fans in defrost"),
 }
 
 # Reverse mapping: token -> mnemonic
@@ -306,10 +315,12 @@ def cmd_read(args):
         # Group by category
         categories = {
             "PROBES": ["Pb1", "Pb2", "Pb3"],
-            "SETPOINT & REGULATION": ["St", "rd"],
+            "SETPOINT & REGULATION": ["St", "rd", "LSE", "HSE"],
+            "PROBE CALIBRATION": ["/C1", "/C2"],
             "ALARMS": ["AL", "AH"],
             "COMPRESSOR TIMING": ["c1", "c2", "c3"],
             "DEFROST": ["d0", "d1", "dt", "dP", "d4", "d5", "d6", "d8", "d9", "dd", "dC"],
+            "FANS": ["F0", "F1", "F2", "F3", "Fd"],
         }
 
         for cat_name, params in categories.items():
