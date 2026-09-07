@@ -1,0 +1,510 @@
+CAREL carel_final.py changes and findings
+=========================================
+
+1. Fixed write unlock
+
+Changed the unlock enable command from:
+
+    Ad0001
+
+to:
+
+    A00001
+
+Confirmed working unlock sequence:
+
+    1U710016  -> ACK
+    1A00001   -> ACK
+
+
+2. Confirmed write format
+
+The setpoint write format is:
+
+    1A8xxxx
+
+where 8 is the EZ index for St and xxxx is the raw 16-bit value.
+
+Examples:
+
+    St = 4.0     -> raw 0x0028
+    St = -19.0   -> raw 0xFF42
+
+
+3. Found the working read trigger
+
+Plain ENQ polling alone returned NULL/00.
+
+The working read/table dump trigger is:
+
+    1F1
+
+Read flow:
+
+    1F1 -> ACK
+    ENQ + unit -> token/value frame
+    ACK
+    ENQ + unit -> next token/value frame
+    ACK
+    repeat until 00/NULL
+
+
+4. Updated poll_all()
+
+poll_all() now starts the CAREL dump with:
+
+    self.send(f"{self.slot}F1")
+
+If F1 does not ACK, the read should stop and return no values rather than continuing through repeated ENQ timeouts.
+
+
+5. Added smarter NULL handling
+
+Added a needed-token check so the script does not stop too early if a 00 appears before all wanted tokens have been read.
+
+The logic is:
+
+    If 00 appears before all needed tokens are present, keep polling.
+    If 00 appears after all needed tokens are present, stop cleanly.
+
+
+6. Added debug visibility
+
+poll_all() now logs useful read detail in verbose mode:
+
+    ENQ RX: timeout
+    ENQ RX: <hex frame>
+
+This helps distinguish:
+
+    no response
+    NULL/00 response
+    actual CAREL token/value frames
+
+
+7. Added probe temperature output
+
+Added probe mappings:
+
+    Pb1 -> S11 -> Probe 1 / room-control temp
+    Pb2 -> S21 -> Probe 2 / evaporator temp
+    Pb3 -> S31 -> Probe 3 / auxiliary temp
+
+
+8. Added status output
+
+Added status mappings:
+
+    B21 -> Compressor ON
+    B31 -> Defrost active
+    B41 -> Fan ON
+    B71 -> Alarm active
+    B:1 -> Probe fault
+
+The read output now includes a STATUS section showing these as ON/OFF.
+
+
+9. Corrected misleading parameter labels
+
+Corrected CAREL label meanings:
+
+    d6 -> Display during defrost
+    d9 -> Defrost priority over compressor protection
+    dC -> Defrost time base
+
+Note: dI is the CAREL manual name for defrost interval. The older script used d1 as the display name, but dI is clearer.
+
+
+10. Confirmed protocol details
+
+Confirmed for the CAREL PJEZ TTL/key-port link:
+
+    Serial: 19200 baud, 8 data bits, no parity, 2 stop bits
+    Frame: STX + one ASCII unit address + command body + ETX + checksum
+    Checksum: byte SUM including STX and ETX, lower 8 bits, encoded as two ASCII nibbles
+
+Known working commands:
+
+    1?        -> fixed identity/version frame
+    1U710016  -> password/unlock ACK
+    1A00001   -> write-enable ACK
+    1A8xxxx   -> write setpoint ACK
+    1F1       -> read/table dump ACK
+
+
+11. Important troubleshooting note
+
+When the controller/TTL lead was unplugged, all known-good commands returned no response:
+
+    b''
+
+That was not a code issue. It meant the CAREL was not replying at the physical/connection level.
+
+Expected signs when comms are healthy:
+
+    1?   returns a frame starting 02 31 56 ...
+    1F1  returns ACK 06
+    read then returns S/U/B token frames after ENQ polling
+
+
+12. References and evidence used
+
+The conclusion was based mainly on live tests against the actual CAREL PJEZC0P000 controller, not on a complete public CAREL protocol document.
+
+Primary evidence:
+
+    Live serial command tests from the Raspberry Pi
+    Controller responses captured as raw hex
+    CAREL paper parameter list supplied with the controller
+    Existing carel_final.py and collector.py code
+    Existing token mappings from the earlier working collector
+
+Important live test results:
+
+    1? returned fixed identity/version frame:
+        02 31 56 DD 49 03 3B 32
+
+    1U710016 returned ACK:
+        06
+
+    1A00001 returned ACK:
+        06
+
+    1A8xxxx returned ACK and changed St/setpoint:
+        06
+
+    ENQ + unit returned 00 when no values were queued:
+        05 31 -> 00
+
+    1F1 returned ACK and caused ENQ polling to return S/U/B token frames.
+
+Read-command candidates tested and ruled out:
+
+    R, G, E, Q, L, M, X, V, B, C, H, S, a and ? variants
+
+These mostly returned ACK followed by ENQ 00, or the fixed 1V/DD49 identity frame, so they were not accepted as useful direct parameter reads.
+
+External references considered:
+
+    CAREL PJEZ/easy parameter manual and paper copy photos
+    General CAREL Supervisor Protocol information found online
+    Google/AI-suggested protocol notes about CAREL Supervisor/TTL/key-port behaviour
+
+Important caveat:
+
+    The generic CAREL Supervisor RS485 format with two-digit address and XOR checksum did not match this controller connection.
+    The proven working protocol for this installation is the TTL/key-port style using one ASCII unit address and the two-nibble SUM checksum.
+
+
+13. Code changes to apply to original carel_final.py
+
+Apply these changes to the original carel_final.py.
+
+
+13.1 Fix unlock()
+
+Find:
+
+    def unlock(self, password=0x16):
+        """Unlock controller for writing."""
+        if not self.send(f"{self.slot}U71{password:04X}"):
+            return False
+        time.sleep(0.05)
+        return self.send(f"{self.slot}Ad0001")
+
+Change the final line to:
+
+        return self.send(f"{self.slot}A00001")
+
+
+13.2 Add probe temperature mappings
+
+Inside PARAMS, near the S-table entries, add:
+
+    "Pb1": ("S11", 10, True, "Probe 1 / room-control temp C"),
+    "Pb2": ("S21", 10, True, "Probe 2 / evaporator temp C"),
+    "Pb3": ("S31", 10, True, "Probe 3 / auxiliary temp C"),
+
+
+13.3 Correct misleading labels
+
+In PARAMS, use:
+
+    "d6": ("BM1", 1, False, "Display during defrost"),
+    "d9": ("BN1", 1, False, "Defrost priority over compressor protection"),
+    "dC": ("BO1", 1, False, "Defrost time base"),
+
+Optional naming cleanup:
+
+    Use dI instead of d1 for the CAREL defrost interval display name if you want the script to match the CAREL manual.
+
+
+13.4 Add STATUS mapping
+
+Directly under TOKEN_TO_PARAM, add:
+
+    STATUS = {
+        "B21": "Compressor ON",
+        "B31": "Defrost active",
+        "B41": "Fan ON",
+        "B71": "Alarm active",
+        "B:1": "Probe fault",
+    }
+
+
+13.5 Replace poll_all() with the F1 dump version
+
+Replace the original poll_all() with:
+
+    def poll_all(self, cycles=120, max_null=50):
+        """Start CAREL table dump, then poll queued tokens."""
+        values = {}
+        null_count = 0
+        needed = {PARAMS[m][0] for m in PARAMS}
+
+        if not self.send(f"{self.slot}F1"):
+            self.log("Read dump start failed")
+            return values
+        time.sleep(0.05)
+
+        for _ in range(cycles):
+            self.ser.write(bytes([ENQ, 0x30 + self.unit]))
+            frame = self.read_frame()
+
+            if frame is None:
+                self.log("ENQ RX: timeout")
+                continue
+
+            self.log(f"ENQ RX: {frame.hex(' ')}")
+
+            if frame == bytes([NULL]):
+                if needed.issubset(values.keys()):
+                    break
+                null_count += 1
+                if null_count >= max_null:
+                    break
+                continue
+
+            null_count = 0
+            self.ser.write(bytes([ACK]))
+
+            if len(frame) >= 6 and frame[0] == STX:
+                try:
+                    etx = frame.index(ETX)
+                    body = frame[1:etx].decode("ascii", errors="ignore")
+                    if len(body) >= 5 and body[1] in "SUB":
+                        token = f"{body[1]}{body[2:4]}"
+                        raw = carel_hex(body[4:]) & 0xFFFF
+                        values[token] = raw
+                except Exception:
+                    pass
+
+            time.sleep(0.02)
+
+        return values
+
+
+13.6 Add probes to cmd_read() categories
+
+Find:
+
+    categories = {
+        "SETPOINT & REGULATION": ["St", "rd"],
+        "ALARMS": ["AL", "AH"],
+        "COMPRESSOR TIMING": ["c1", "c2", "c3"],
+        "DEFROST": ["d0", "d1", "dt", "dP", "d4", "d5", "d6", "d8", "d9", "dd", "dC"],
+    }
+
+Change to:
+
+    categories = {
+        "PROBES": ["Pb1", "Pb2", "Pb3"],
+        "SETPOINT & REGULATION": ["St", "rd"],
+        "ALARMS": ["AL", "AH"],
+        "COMPRESSOR TIMING": ["c1", "c2", "c3"],
+        "DEFROST": ["d0", "d1", "dt", "dP", "d4", "d5", "d6", "d8", "d9", "dd", "dC"],
+    }
+
+
+13.7 Add STATUS output to cmd_read()
+
+Near the end of cmd_read(), immediately before:
+
+    print("\n" + "=" * 60)
+    return 0
+
+add:
+
+        print("\nSTATUS")
+        print("-" * 50)
+        for token, desc in STATUS.items():
+            if token in values:
+                state = "ON" if (values[token] & 1) else "OFF"
+                print(f"  {desc:24} = {state}")
+            else:
+                print(f"  {desc:24} = N/A")
+
+
+13.8 Test commands
+
+After applying the changes, test with:
+
+    sudo python carel_final.py --port /dev/ttyACM0 --unit 1 -v read
+
+Then without verbose:
+
+    sudo python carel_final.py --port /dev/ttyACM0 --unit 1 read
+
+Expected result:
+
+    Parameters, probe temperatures and status values should show instead of N/A.
+
+
+14. Minimum changes needed to make WRITE work
+
+These are the key changes required for reliable writing.
+
+
+14.1 Fix the unlock-enable command
+
+Original code:
+
+    return self.send(f"{self.slot}Ad0001")
+
+Correct code:
+
+    return self.send(f"{self.slot}A00001")
+
+Why:
+
+    Ad0001 writes to the wrong index character.
+    A00001 is the confirmed write-enable/unlock command.
+
+Confirmed write unlock sequence:
+
+    1U710016  -> ACK 06
+    1A00001   -> ACK 06
+
+
+14.2 Keep the existing write_raw() format
+
+The existing write format is correct for S-table values such as St:
+
+    body = f"{self.slot}{cmd}{idx_char}{raw & 0xFFFF:04X}"
+
+Example for St:
+
+    St uses token S81
+    EZ index is 8
+    Write body is 1A8xxxx
+
+Examples:
+
+    St = 4.0    -> raw 0x0028 -> 1A80028
+    St = -19.0  -> raw 0xFF42 -> 1A8FF42
+
+
+14.3 Do not continue writing if unlock fails
+
+If unlock fails, treat it as a comms/permission problem and do not attempt the parameter write.
+
+Expected healthy replies:
+
+    1?        -> frame beginning 02 31 56 ...
+    1U710016  -> ACK 06
+    1A00001   -> ACK 06
+
+If these return b'', the CAREL is not replying. Check cable, power, port and wiring before trying more writes.
+
+
+15. Minimum changes needed to make READ work
+
+These are the key changes required for reliable reading.
+
+
+15.1 Start the CAREL read dump with F1
+
+Plain ENQ polling alone is not enough. It returns 00/NULL when no data is queued.
+
+Before polling, send:
+
+    1F1
+
+In code, add this at the start of poll_all():
+
+    if not self.send(f"{self.slot}F1"):
+        self.log("Read dump start failed")
+        return values
+    time.sleep(0.05)
+
+Why:
+
+    F1 is the confirmed table-dump trigger.
+    After F1 ACKs, ENQ polling returns S/U/B token frames.
+
+Confirmed read flow:
+
+    1F1 -> ACK 06
+    ENQ + unit -> token/value frame
+    ACK
+    ENQ + unit -> next token/value frame
+    ACK
+    repeat until 00/NULL
+
+
+15.2 ACK actual data frames
+
+When a frame starts with STX, decode it and then ACK it:
+
+    self.ser.write(bytes([ACK]))
+
+Do this for real token/value frames, not for 00/NULL.
+
+
+15.3 Handle NULL/00 carefully
+
+Do not stop at the first 00 unless all required tokens have already been read.
+
+Add:
+
+    needed = {PARAMS[m][0] for m in PARAMS}
+
+Then use:
+
+    if frame == bytes([NULL]):
+        if needed.issubset(values.keys()):
+            break
+        null_count += 1
+        if null_count >= max_null:
+            break
+        continue
+
+Why:
+
+    A 00 may appear before all wanted tokens have arrived.
+    This logic keeps polling until all known mapped tokens are present, or until max_null is reached.
+
+
+15.4 Add read debug output
+
+Add these logs inside poll_all():
+
+    self.log("ENQ RX: timeout")
+    self.log(f"ENQ RX: {frame.hex(' ')}")
+
+Why:
+
+    This shows whether the controller is returning no response, 00/NULL, or actual token frames.
+
+
+15.5 Direct read note
+
+This is not a direct EEPROM/register read.
+
+The working method is:
+
+    Start exported table dump with F1
+    Poll the queued stream with ENQ
+    ACK each token/value frame
+
+Direct one-parameter reads were not found. Many guessed commands returned ACK only or the fixed identity frame, but did not return parameter values.
